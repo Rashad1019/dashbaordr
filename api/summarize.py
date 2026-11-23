@@ -11,6 +11,7 @@ from http.server import BaseHTTPRequestHandler
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _openrouter import summarize, SummaryError  # noqa: E402
+from _summary_security import read_request, summary_slot, RequestError
 
 
 class handler(BaseHTTPRequestHandler):
@@ -20,15 +21,18 @@ class handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 
     def do_POST(self):
+        self.close_connection = True
         try:
-            length = min(int(self.headers.get("Content-Length", 0)), 20000)
-            req    = json.loads(self.rfile.read(length) or b"{}")
-            self._send(summarize(req.get("stories", []), req.get("topics", [])))
-        except SummaryError as e:
-            self._send({"error": str(e)}, 502)
-        except (ValueError, json.JSONDecodeError):
-            self._send({"error": "Request body must be JSON."}, 400)
+            stories, topics = read_request(self)
+            with summary_slot():
+                result = summarize(stories, topics)
+            self._send(result)
+        except RequestError as e:
+            self._send({"error": str(e)}, e.status)
+        except SummaryError:
+            self._send({"error": "AI summaries are temporarily unavailable."}, 502)

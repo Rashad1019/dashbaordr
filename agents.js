@@ -437,15 +437,22 @@ function splitHeadline(raw) {
 }
 
 // Ask the server (OpenRouter) for real summaries. Throws with a readable reason.
-async function fetchAISummaries(stories, topics) {
+let summaryAccessToken = ""; // Memory only; never saved in browser storage.
+async function fetchAISummaries(stories, topics, allowPrompt = true) {
   const res = await fetch("/api/summarize", {
     method:  "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json",
+      ...(summaryAccessToken ? { Authorization: `Bearer ${summaryAccessToken}` } : {}) },
     body:    JSON.stringify({
       topics:  topics.map(t => t.label),
       stories: stories.map(item => splitHeadline(item.headline)),
     }),
   });
+  if (res.status === 401 && allowPrompt) {
+    summaryAccessToken = window.prompt("Enter your summary access token to enable AI summaries, or cancel for basic summaries.")?.trim() || "";
+    if (summaryAccessToken) return fetchAISummaries(stories, topics, false);
+  }
+  if (res.status === 401) summaryAccessToken = "";
   let data = {};
   try { data = await res.json(); } catch { /* non-JSON error page */ }
   if (!res.ok || !Array.isArray(data.summaries)) {
