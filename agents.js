@@ -59,9 +59,7 @@ function saveSections() {
 }
 
 let sections       = loadSections(); // the list shown on the page
-let selectedTopics = [];             // the ones highlighted for this edition
 
-const isSelected = label => selectedTopics.some(t => sameLabel(t.label, label));
 const isFull     = () => sections.length >= MAX_SECTIONS;
 
 /* ═══════════════════════════════════════════
@@ -71,28 +69,19 @@ function renderSections() {
   const grid = document.getElementById("chip-grid");
   grid.innerHTML = "";
 
-  sections.forEach((topic, i) => {
-    const on   = isSelected(topic.label);
+  sections.forEach(topic => {
     const item = document.createElement("span");
-    item.className = "section-item" + (on ? " selected" : "");
+    item.className = "section-item";
     item.innerHTML = `
-      <button type="button" class="topic-chip" id="chip-${i}" aria-pressed="${on}">${escapeHtml(topic.label)}</button>
+      <span class="topic-chip">${escapeHtml(topic.label)}</span>
       <button type="button" class="chip-remove" aria-label="Remove ${escapeHtml(topic.label)} from your sections">×</button>`;
-    item.querySelector(".topic-chip").addEventListener("click", () => toggleTopic(topic));
     item.querySelector(".chip-remove").addEventListener("click", () => removeSection(topic.label));
     grid.appendChild(item);
   });
 }
 
-function toggleTopic(topic) {
-  if (isSelected(topic.label)) selectedTopics = selectedTopics.filter(t => !sameLabel(t.label, topic.label));
-  else selectedTopics.push(topic);
-  refresh();
-}
-
 function removeSection(label) {
   sections       = sections.filter(t => !sameLabel(t.label, label));
-  selectedTopics = selectedTopics.filter(t => !sameLabel(t.label, label));
   saveSections();
   refresh();
 }
@@ -115,7 +104,7 @@ function refresh() {
   const defaults  = defaultLabels();
   const isDefault = n === defaults.length && sections.every((t, i) => t.label === defaults[i]);
   document.getElementById("btn-clear").hidden = isDefault;
-  document.getElementById("btn-run").disabled = selectedTopics.length === 0;
+  document.getElementById("btn-run").disabled = sections.length === 0;
 }
 
 /* ═══════════════════════════════════════════
@@ -130,7 +119,6 @@ function addCustomTopic() {
 
   const topic = topicFor(raw);
   sections.push(topic);
-  selectedTopics.push(topic); // a section you just added is probably one you want
   saveSections();
   input.value = "";
   refresh();
@@ -138,7 +126,6 @@ function addCustomTopic() {
 
 document.getElementById("btn-clear").addEventListener("click", () => {
   sections       = defaultLabels().map(topicFor);
-  selectedTopics = [];
   saveSections();
   refresh();
 });
@@ -201,26 +188,34 @@ function autoTag(headline) {
    RELEVANCE SCORING  (Agent B)
    Scores against all selected topic keywords
 ═══════════════════════════════════════════ */
+const STOPWORDS = new Set(["and","the","for","with","news","from","about","into","of","in","on","to","a","an","or","vs"]);
+const normalize = str => str.replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
 function buildKeywords(topics) {
   const keywords = new Set();
   topics.forEach(t => {
-    t.query.toLowerCase().split(/\s+/).forEach(w => {
-      if (w.length > 3) keywords.add(w);
+    [t.query, t.label].forEach(text => {
+      normalize(text).split(" ").forEach(w => {
+        if (w.length >= 2 && !STOPWORDS.has(w) && !/^\d+$/.test(w)) keywords.add(w);
+      });
     });
-    t.label.toLowerCase().split(/\s+/).forEach(w => {
-      if (w.length > 3) keywords.add(w);
-    });
+    // also the label written as one word, so "Grok Bot" and "GrokBot" both match
+    const joined = normalize(t.label).replace(/ /g, "");
+    if (joined.length >= 4) keywords.add(joined);
   });
   return [...keywords];
 }
 
 function scoreHeadline(headline, keywords) {
-  const lower   = headline.toLowerCase();
+  const words  = ` ${normalize(headline)} `;
+  const joined = words.replace(/ /g, "");
   let score     = 0;
   const matched = [];
   keywords.forEach(kw => {
-    if (lower.includes(kw)) {
-      score += kw.length > 7 ? 20 : kw.length > 5 ? 12 : 6;
+    // short words like "ai" must match a whole word, so "said" doesn't count
+    const hit = kw.length <= 3 ? words.includes(` ${kw} `) : words.includes(kw) || joined.includes(kw);
+    if (hit) {
+      score += kw.length > 7 ? 20 : kw.length > 5 ? 12 : kw.length <= 3 ? 10 : 6;
       matched.push(kw);
     }
   });
@@ -297,7 +292,7 @@ function showToast(msg, dur = 3000) {
 ═══════════════════════════════════════════ */
 async function runAgentA(topics) {
   setAgentState("a", "running");
-  setAgentStatus("a", `Fetching from ${topics.length} topic feed(s)…`);
+  setAgentStatus("a", `Fetching ${topics.length} section${topics.length === 1 ? "" : "s"}…`);
   const start = Date.now();
 
   // Fetch all sections, starting each request a moment apart so Google News doesn't refuse the burst
@@ -371,16 +366,31 @@ async function runAgentB(catalogue, topics) {
 
   const ranked = [...scored].sort((a, b) => b.score - a.score);
 
-  // One story per section: score each section's own headlines against that section's words
+  // One story per section, scored against that section's own words.
+  // Prefer the section's own headlines; if all of them were already taken by another
+  // section, borrow any unused headline that matches. Ties go to the newest story.
   const picks = [];
   const used  = new Set();
+  const newer = (x, y) => (Date.parse(y.item.pubDate) || 0) - (Date.parse(x.item.pubDate) || 0);
+  const bestFor = (words, pool) => pool
+    .filter(item => !used.has(item.id))
+    .map(item => ({ item, s: scoreHeadline(item.headline, words).score }))
+    .sort((x, y) => y.s - x.s || newer(x, y))[0];
+
+  const uncovered = [];
   topics.forEach(topic => {
     const words = buildKeywords([topic]);
-    const best  = scored
-      .filter(item => item.source === topic.label && !used.has(item.id))
-      .map(item => ({ item, s: scoreHeadline(item.headline, words).score }))
-      .sort((x, y) => y.s - x.s)[0];
-    if (best) { used.add(best.item.id); picks.push(best.item); }
+    let best = bestFor(words, scored.filter(item => item.source === topic.label));
+    if (!best) {
+      const borrowed = bestFor(words, scored);
+      if (borrowed && borrowed.s > 0) best = borrowed;
+    }
+    if (best) {
+      used.add(best.item.id);
+      picks.push({ ...best.item, score: best.s, source: topic.label });
+    } else {
+      uncovered.push(topic.label);
+    }
   });
   // With fewer than three sections, fill the page up to three stories
   for (const item of ranked) {
@@ -391,7 +401,10 @@ async function runAgentB(catalogue, topics) {
 
   setMetric("m-b-selected", picks.length);
   setMetric("m-b-time",     Date.now() - start);
-  setAgentStatus("b", `${picks.length} stories picked, one per section`);
+  setAgentStatus("b", uncovered.length
+    ? `${picks.length} stories picked. No story found for ${uncovered.join(", ")}.`
+    : `${picks.length} stories picked, one for each section`);
+  if (uncovered.length) showToast(`No story found for ${uncovered.join(", ")}. Print again to retry.`, 5000);
   setAgentState("b", "done");
   document.getElementById("arrow-bc").classList.add("active");
   return { ranked, picks };
@@ -559,13 +572,13 @@ function resetPipeline() {
    MAIN RUN
 ═══════════════════════════════════════════ */
 document.getElementById("btn-run").addEventListener("click", async () => {
-  if (!selectedTopics.length) return;
+  if (!sections.length) return;
 
   document.getElementById("btn-run").disabled = true;
   document.getElementById("results-section").style.display = "none";
   resetPipeline();
 
-  const topics = [...selectedTopics];
+  const topics = [...sections]; // every section on the list goes into the edition
   const tTotal = Date.now();
 
   try {
@@ -587,7 +600,7 @@ document.getElementById("btn-run").addEventListener("click", async () => {
     console.error(err);
     showToast("The press stopped on an error. Details are in the browser console.");
   } finally {
-    document.getElementById("btn-run").disabled = selectedTopics.length === 0;
+    document.getElementById("btn-run").disabled = sections.length === 0;
   }
 });
 
