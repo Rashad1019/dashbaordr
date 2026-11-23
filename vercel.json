@@ -5,6 +5,10 @@
       "dest": "/api/news.py"
     },
     {
+      "src": "/api/summarize",
+      "dest": "/api/summarize.py"
+    },
+    {
       "src": "/(.*)",
       "dest": "/$1"
     }

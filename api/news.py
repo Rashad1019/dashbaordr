@@ -9,36 +9,36 @@ import urllib.request
 import urllib.parse
 import json
 import xml.etree.ElementTree as ET
+from http.server import BaseHTTPRequestHandler
 
-def handler(request):
-    """Vercel serverless handler."""
 
-    # Parse query params
-    parsed = urllib.parse.urlparse(request.url)
-    params = urllib.parse.parse_qs(parsed.query)
-    query  = params.get("q", [""])[0].strip()
-    count  = int(params.get("count", ["15"])[0])
+class handler(BaseHTTPRequestHandler):
+    """Vercel's Python runtime looks for a BaseHTTPRequestHandler named `handler`."""
 
-    if not query:
-        return Response(
-            json.dumps({"error": "missing q parameter"}),
-            status=400,
-            headers={"Content-Type": "application/json"},
-        )
+    def _send(self, data, status=200):
+        body = json.dumps(data, ensure_ascii=False).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(body)
 
-    try:
-        items = fetch_news(query, count)
-        body  = json.dumps({"status": "ok", "items": items}, ensure_ascii=False)
-        return Response(body, status=200, headers={
-            "Content-Type":                "application/json; charset=utf-8",
-            "Access-Control-Allow-Origin": "*",
-        })
-    except Exception as e:
-        return Response(
-            json.dumps({"error": str(e)}),
-            status=500,
-            headers={"Content-Type": "application/json"},
-        )
+    def do_GET(self):
+        params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        query  = params.get("q", [""])[0].strip()
+        try:
+            count = max(1, min(int(params.get("count", ["15"])[0]), 50))
+        except ValueError:
+            count = 15
+
+        if not query:
+            self._send({"error": "missing q parameter"}, 400)
+            return
+        try:
+            self._send({"status": "ok", "items": fetch_news(query, count)})
+        except Exception as e:
+            self._send({"error": str(e)}, 500)
 
 
 def fetch_news(query: str, count: int = 15) -> list:

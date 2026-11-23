@@ -371,26 +371,61 @@ async function runAgentB(catalogue, topics) {
 /* ═══════════════════════════════════════════
    AGENT C – WRITE SUMMARIES
 ═══════════════════════════════════════════ */
+// Google News headlines end in " - Publisher"; split that off for the byline
+function splitHeadline(raw) {
+  const m = raw.match(/^(.*\S)\s+[-–—|]\s+([^-–—|]{2,60})$/);
+  return m ? { headline: m[1], publisher: m[2] } : { headline: raw, publisher: "" };
+}
+
+// Ask the server (OpenRouter) for real summaries. Throws with a readable reason.
+async function fetchAISummaries(top3, topics) {
+  const res = await fetch("/api/summarize", {
+    method:  "POST",
+    headers: { "Content-Type": "application/json" },
+    body:    JSON.stringify({
+      topics:  topics.map(t => t.label),
+      stories: top3.map(item => splitHeadline(item.headline)),
+    }),
+  });
+  let data = {};
+  try { data = await res.json(); } catch { /* non-JSON error page */ }
+  if (!res.ok || !Array.isArray(data.summaries)) {
+    throw new Error(data.error || `Summary service unavailable (${res.status})`);
+  }
+  return data;
+}
+
 async function runAgentC(top3, topics) {
   setAgentState("c", "running");
   setAgentStatus("c", "Writing summaries…");
-  const start     = Date.now();
+  setProgress("c", 15);
+  const start = Date.now();
+
+  let texts, status;
+  try {
+    const ai = await fetchAISummaries(top3, topics);
+    texts  = ai.summaries;
+    const model = (ai.model || "AI model").split("/").pop().replace(/:free$/, "");
+    status = `${top3.length} summaries written by ${model}`;
+  } catch (err) {
+    console.warn("Agent C fallback:", err.message);
+    texts  = top3.map((item, i) => generateSummary(item.headline, item.keywords, topics, i));
+    status = `Basic summaries used. ${err.message}`;
+  }
+
   const summaries = [];
   let totalWords  = 0;
-
   for (let i = 0; i < top3.length; i++) {
-    const item    = top3[i];
-    const summary = generateSummary(item.headline, item.keywords, topics, i);
-    summaries.push({ ...item, summary });
-    totalWords += summary.split(/\s+/).length;
+    summaries.push({ ...top3[i], summary: texts[i] });
+    totalWords += texts[i].split(/\s+/).length;
     setProgress("c", ((i + 1) / top3.length) * 100);
     setMetric("m-c-drafted", i + 1);
     setMetric("m-c-words",   totalWords);
-    await sleep(480);
+    await sleep(160);
   }
 
-  setMetric("m-c-time",  Date.now() - start);
-  setAgentStatus("c", `${top3.length} summaries written`);
+  setMetric("m-c-time", Date.now() - start);
+  setAgentStatus("c", status);
   setAgentState("c", "done");
   return summaries;
 }
@@ -416,15 +451,12 @@ function renderResults(summaries, allRanked, topics) {
   const ordinals    = ["1st", "2nd", "3rd"];
 
   summaries.forEach((item, i) => {
-    const summary  = item.summary.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
+    const summary  = escapeHtml(item.summary).replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
     const date     = formatDate(item.pubDate);
     const linkHtml = safeLink(item.link)
       ? `<a class="result-link" href="${escapeHtml(item.link)}" target="_blank" rel="noopener">Read the full story</a>` : "";
 
-    // Google News headlines end in " - Publisher"; move that into the byline
-    const m         = item.headline.match(/^(.*\S)\s+[-–—|]\s+([^-–—|]{2,60})$/);
-    const headline  = m ? m[1] : item.headline;
-    const publisher = m ? m[2] : "";
+    const { headline, publisher } = splitHeadline(item.headline);
 
     const card = document.createElement("article");
     card.className = `result-card ${i === 0 ? "lead" : "side"}`;

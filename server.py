@@ -16,6 +16,10 @@ import sys
 PORT    = 5500
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+# Shared Agent C summary writer (also used by the Vercel function)
+sys.path.insert(0, os.path.join(BASE_DIR, "api"))
+from _openrouter import summarize, SummaryError, load_key  # noqa: E402
+
 # ── Fetch + parse Google News RSS ────────────────────────────────────
 def fetch_news(query: str, count: int = 15) -> list:
     encoded = urllib.parse.quote(query)
@@ -56,9 +60,13 @@ def fetch_news(query: str, count: int = 15) -> list:
 class Handler(http.server.BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
-        # Suppress noisy log; only print errors
-        if int(args[1]) >= 400:
-            print(f"  [{args[1]}] {args[0]}", file=sys.stderr)
+        # Suppress noisy log; only print errors.
+        # Request logs pass (requestline, code, size); send_error passes (code, message).
+        try:
+            if len(args) >= 2 and int(args[1]) >= 400:
+                print(f"  [{args[1]}] {args[0]}", file=sys.stderr)
+        except (ValueError, TypeError):
+            pass
 
     def _send_json(self, data, status=200):
         body = json.dumps(data, ensure_ascii=False).encode()
@@ -92,7 +100,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # ── API endpoint ──────────────────────────────────────────
         if path == "/api/news":
             query = params.get("q", [""])[0].strip()
-            count = int(params.get("count", ["15"])[0])
+            try:
+                count = max(1, min(int(params.get("count", ["15"])[0]), 50))
+            except ValueError:
+                count = 15
             if not query:
                 self._send_json({"error": "missing q parameter"}, 400)
                 return
@@ -120,10 +131,29 @@ class Handler(http.server.BaseHTTPRequestHandler):
         else:
             self.send_error(404, "Not Found")
 
+    def do_POST(self):
+        path = urllib.parse.urlparse(self.path).path
+        if path != "/api/summarize":
+            self.send_error(404, "Not Found")
+            return
+        try:
+            length = min(int(self.headers.get("Content-Length", 0)), 20000)
+            req    = json.loads(self.rfile.read(length) or b"{}")
+        except (ValueError, json.JSONDecodeError):
+            self._send_json({"error": "Request body must be JSON."}, 400)
+            return
+        try:
+            result = summarize(req.get("stories", []), req.get("topics", []))
+            print(f"  [AI] {len(result['summaries'])} summaries from {result['model']}")
+            self._send_json(result)
+        except SummaryError as e:
+            print(f"  [AI] fallback: {e}", file=sys.stderr)
+            self._send_json({"error": str(e)}, 502)
+
     def do_OPTIONS(self):
         self.send_response(200)
         self.send_header("Access-Control-Allow-Origin",  "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
 
@@ -134,6 +164,7 @@ if __name__ == "__main__":
         print(f"\n  ✦ MultiAgent News server running")
         print(f"  ✦ Open → http://localhost:{PORT}")
         print(f"  ✦ API  → http://localhost:{PORT}/api/news?q=your+topic")
+        print(f"  ✦ AI summaries: {'on (OpenRouter key found)' if load_key() else 'off, add OPENROUTER_API_KEY to .env'}")
         print(f"\n  Press Ctrl+C to stop.\n")
         try:
             srv.serve_forever()
