@@ -13,12 +13,16 @@ import os
 import mimetypes
 import sys
 
-PORT    = 5500
+PORT = int(os.environ.get("PORT", "5500"))
+if not 1 <= PORT <= 65535:
+    raise ValueError("PORT must be between 1 and 65535")
+PUBLIC_FILES = {"/index.html", "/style.css", "/agents.js"}
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Shared Agent C summary writer (also used by the Vercel function)
 sys.path.insert(0, os.path.join(BASE_DIR, "api"))
 from _openrouter import summarize, SummaryError, load_key  # noqa: E402
+from _summary_security import read_request, summary_slot, RequestError
 
 # ── Fetch + parse Google News RSS ────────────────────────────────────
 def fetch_news(query: str, count: int = 15) -> list:
@@ -73,7 +77,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type",  "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 
@@ -120,42 +124,33 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path == "/" or path == "":
             path = "/index.html"
 
-        file_path = os.path.join(BASE_DIR, path.lstrip("/"))
-        # Safety: keep within BASE_DIR
-        if not os.path.abspath(file_path).startswith(BASE_DIR):
-            self.send_error(403, "Forbidden")
-            return
-
-        if os.path.isfile(file_path):
-            self._send_file(file_path)
-        else:
+        if path not in PUBLIC_FILES:
             self.send_error(404, "Not Found")
+            return
+        file_path = os.path.join(BASE_DIR, path.lstrip("/"))
+        if os.path.islink(file_path):
+            self.send_error(404, "Not Found")
+            return
+        self._send_file(file_path)
 
     def do_POST(self):
         path = urllib.parse.urlparse(self.path).path
         if path != "/api/summarize":
             self.send_error(404, "Not Found")
             return
+        self.close_connection = True
         try:
-            length = min(int(self.headers.get("Content-Length", 0)), 20000)
-            req    = json.loads(self.rfile.read(length) or b"{}")
-        except (ValueError, json.JSONDecodeError):
-            self._send_json({"error": "Request body must be JSON."}, 400)
-            return
-        try:
-            result = summarize(req.get("stories", []), req.get("topics", []))
-            print(f"  [AI] {len(result['summaries'])} summaries from {result['model']}")
+            stories, topics = read_request(self)
+            with summary_slot():
+                result = summarize(stories, topics)
             self._send_json(result)
-        except SummaryError as e:
-            print(f"  [AI] fallback: {e}", file=sys.stderr)
-            self._send_json({"error": str(e)}, 502)
+        except RequestError as e:
+            self._send_json({"error": str(e)}, e.status)
+        except SummaryError:
+            self._send_json({"error": "AI summaries are temporarily unavailable."}, 502)
 
     def do_OPTIONS(self):
-        self.send_response(200)
-        self.send_header("Access-Control-Allow-Origin",  "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
-        self.end_headers()
+        self.send_error(405, "Method Not Allowed")
 
 
 # ── Main ─────────────────────────────────────────────────────────────
@@ -164,7 +159,8 @@ if __name__ == "__main__":
         print(f"\n  ✦ MultiAgent News server running")
         print(f"  ✦ Open → http://localhost:{PORT}")
         print(f"  ✦ API  → http://localhost:{PORT}/api/news?q=your+topic")
-        print(f"  ✦ AI summaries: {'on (OpenRouter key found)' if load_key() else 'off, add OPENROUTER_API_KEY to .env'}")
+        ai_ready = bool(load_key()) and len(os.environ.get('SUMMARY_ACCESS_TOKEN', '')) >= 32
+        print(f"  ✦ AI summaries: {'on (access token required)' if ai_ready else 'off; configure OPENROUTER_API_KEY and SUMMARY_ACCESS_TOKEN'}")
         print(f"\n  Press Ctrl+C to stop.\n")
         try:
             srv.serve_forever()

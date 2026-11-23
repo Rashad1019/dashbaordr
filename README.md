@@ -79,8 +79,8 @@ News needs no key. AI summaries use a free OpenRouter key; without one the app s
 
 ```bash
 # Clone the repo
-git clone https://github.com/Rashad1019/news-dashboard.git
-cd news-dashboard
+git clone https://github.com/Rashad1019/dashbaordr.git
+cd dashbaordr
 
 # Start the local server (handles both static files and /api/news)
 python server.py
@@ -93,17 +93,20 @@ http://localhost:5500
 
 1. Create a free key at https://openrouter.ai/keys
 2. Copy `.env.example` to `.env` and paste the key after `OPENROUTER_API_KEY=`
-3. Restart `python server.py`. The startup message says whether AI summaries are on.
+3. Set `SUMMARY_ACCESS_TOKEN` as an environment variable with at least 32 random characters (generate one with `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`). This token is separate from the OpenRouter key. Never commit either secret.
+4. Restart `python server.py`. When prompted by the dashboard, enter the summary access token. It stays in memory only until the page reloads. Cancel to use basic summaries.
+
+AI requests fail closed when the access token is missing or shorter than 32 characters. Both Python endpoints require bearer authentication, validate the JSON shape, reject bodies over 20,000 bytes, and allow at most 10 calls per minute and 2 simultaneous calls per process. On serverless deployments, replicas have independent limits; use provider spending limits and a shared gateway limiter if you need a deployment-wide budget. Use HTTPS for remote access.
 
 `.env` is git-ignored, so the key stays on your machine. To use a different free model, set
-`OPENROUTER_MODEL` in `.env` (comma-separated list, tried in order).
+`OPENROUTER_MODEL` as an environment variable (comma-separated list, tried in order).
 
 ---
 
 ## Project Structure
 
 ```
-news-dashboard/
+dashbaordr/
 ├── index.html          # App shell and UI markup
 ├── style.css           # E-paper newspaper design
 ├── agents.js           # All three agent logic (frontend)
@@ -124,9 +127,9 @@ news-dashboard/
 ## Deployment
 
 This project is deployed on **Vercel** via GitHub. Every push to `main` triggers an automatic redeploy.
-For AI summaries on Vercel, add `OPENROUTER_API_KEY` under Project Settings → Environment Variables.
+For AI summaries on Vercel, add `OPENROUTER_API_KEY` and `SUMMARY_ACCESS_TOKEN` under Project Settings → Environment Variables. Only the three public frontend files and the two API routes are exposed by the route configuration.
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/Rashad1019/news-dashboard)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/Rashad1019/dashbaordr)
 
 ---
 
@@ -139,3 +142,12 @@ For AI summaries on Vercel, add `OPENROUTER_API_KEY` under Project Settings → 
 ---
 
 *Built with Google Antigravity IDE · See [ANTIGRAVITY.md](./ANTIGRAVITY.md) for the full story.*
+
+## Replit
+
+Import **Rashad1019/dashbaordr**. The included `.replit` runs `python3 server.py` on port 3000, bound to all interfaces. The server uses the `PORT` environment variable (default 5500 outside Replit).
+Add `OPENROUTER_API_KEY` and `SUMMARY_ACCESS_TOKEN` in Replit Secrets to enable AI summaries; ordinary news and basic summaries work without these secrets. Do not put the OpenRouter key into the browser.
+
+## Verification
+
+Run `python3 -m unittest discover -s tests -v`. The suite uses mocked AI responses and does not make paid requests.
