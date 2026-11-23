@@ -69,7 +69,7 @@ def summarize(stories: list, topics: list) -> dict:
     if not stories:
         raise SummaryError("No stories to summarize.")
 
-    stories = stories[:5]
+    stories = stories[:7]
     lines = [f"Reader's topics: {', '.join(str(t)[:60] for t in topics[:7])}", ""]
     for i, s in enumerate(stories, 1):
         headline  = str(s.get("headline", ""))[:300]
@@ -83,7 +83,7 @@ def summarize(stories: list, topics: list) -> dict:
             {"role": "user", "content": "\n".join(lines)},
         ],
         "temperature": 0.4,
-        "max_tokens": 900,
+        "max_tokens": 300 * len(stories) + 200,
         # Free models with thinking enabled can spend the whole token budget
         # reasoning and return nothing, so turn it off for this short task.
         "reasoning": {"enabled": False},

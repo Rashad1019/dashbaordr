@@ -391,8 +391,11 @@ body {
 .lead > .kicker, .lead > .result-headline, .lead > .result-meta { grid-column: 1; }
 .lead > .summary-text { grid-column: 2; grid-row: 1 / span 2; align-self: start; padding-top: 4px; }
 .lead > .result-link { grid-column: 2; grid-row: 3; align-self: start; margin-top: 0; }
-.result-card.side:nth-child(2) { padding-right: 32px; border-right: 1px solid var(--rule); }
-.result-card.side:nth-child(3) { padding-left: 32px; }
+/* Remaining stories sit in pairs under the lead: left column gets the rule */
+.result-card.side:nth-child(even) { padding-right: 32px; border-right: 1px solid var(--rule); }
+.result-card.side:nth-child(odd)  { padding-left: 32px; }
+.result-card.side:nth-child(n+4)  { border-top: 1px solid var(--hair); }
+.result-card.side:last-child:nth-child(even) { border-right: none; padding-right: 0; }
 
 .kicker {
   font-family: var(--sans);
@@ -567,8 +570,9 @@ body {
   .pipe-arrow { width: auto; height: 1px; margin: 20px 0; }
   .topic-chip { font-size: var(--t-md); }
   .stories { grid-template-columns: 1fr; }
-  .result-card.side:nth-child(2) { padding-right: 0; border-right: none; border-bottom: 1px solid var(--hair); }
-  .result-card.side:nth-child(3) { padding-left: 0; }
+  .result-card.side:nth-child(even),
+  .result-card.side:nth-child(odd) { padding-left: 0; padding-right: 0; border-right: none; }
+  .result-card.side + .result-card.side { border-top: 1px solid var(--hair); }
   .dateline { flex-direction: column; align-items: center; gap: 2px; }
 }
 

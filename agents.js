@@ -2,8 +2,8 @@
    agents.js  –  Multi-Agent News Analyst
    
    Agent A : Fetches live headlines for YOUR chosen topics
-   Agent B : Scores & picks top 3 most relevant
-   Agent C : Drafts one-paragraph summary per top result
+   Agent B : Picks the most relevant story from each section
+   Agent C : Writes a one-paragraph summary of each picked story
    =================================================================== */
 "use strict";
 
@@ -151,19 +151,27 @@ document.getElementById("custom-topic-input").addEventListener("keydown", e => {
 /* ═══════════════════════════════════════════
    CORS PROXY + FETCH
 ═══════════════════════════════════════════ */
-async function fetchFeedForTopic(topic) {
+// Returns { items, ok }. Retries once, since Google News sometimes refuses bursts.
+async function fetchFeedForTopic(topic, attempt = 1) {
   try {
-    const url = `/api/news?q=${encodeURIComponent(topic.query)}&count=15`;
+    const url  = `/api/news?q=${encodeURIComponent(topic.query)}&count=15`;
     const res  = await fetch(url);
     const data = await res.json();
-    if (!data.items) return [];
-    return data.items.map(item => ({
-      headline: item.title.replace(/<[^>]+>/g, "").trim(),
-      link:     item.link    || "",
-      pubDate:  item.pubDate || "",
-      source:   topic.label,
-    }));
-  } catch { return []; }
+    if (!res.ok || !Array.isArray(data.items)) throw new Error(data.error || res.status);
+    return {
+      ok: true,
+      items: data.items.map(item => ({
+        headline: item.title.replace(/<[^>]+>/g, "").trim(),
+        link:     item.link    || "",
+        pubDate:  item.pubDate || "",
+        source:   topic.label,
+      })),
+    };
+  } catch (err) {
+    if (attempt < 3) { await sleep(700 * attempt); return fetchFeedForTopic(topic, attempt + 1); }
+    console.warn(`No news for "${topic.label}":`, err);
+    return { ok: false, items: [] };
+  }
 }
 
 /* ═══════════════════════════════════════════
@@ -292,13 +300,14 @@ async function runAgentA(topics) {
   setAgentStatus("a", `Fetching from ${topics.length} topic feed(s)…`);
   const start = Date.now();
 
-  // Fetch all topics in parallel
-  const allResults = await Promise.all(topics.map(fetchFeedForTopic));
+  // Fetch all sections, starting each request a moment apart so Google News doesn't refuse the burst
+  const allResults = await Promise.all(topics.map((t, i) => sleep(i * 250).then(() => fetchFeedForTopic(t))));
+  const missing    = topics.filter((t, i) => !allResults[i].ok || !allResults[i].items.length).map(t => t.label);
 
   // Flatten + deduplicate
   const seen = new Set();
   const raw  = [];
-  allResults.forEach(items => {
+  allResults.forEach(({ items }) => {
     items.forEach(item => {
       const key = item.headline.toLowerCase().slice(0, 65);
       if (!seen.has(key) && item.headline.length > 12) {
@@ -333,7 +342,10 @@ async function runAgentA(topics) {
   setMetric("m-a-fetched", raw.length);
   setMetric("m-a-parsed",  raw.length);
   setMetric("m-a-time",    Date.now() - start);
-  setAgentStatus("a", `${raw.length} headlines catalogued`);
+  setAgentStatus("a", missing.length
+    ? `${raw.length} headlines catalogued. Nothing came back for ${missing.join(", ")}.`
+    : `${raw.length} headlines from all ${topics.length} sections`);
+  if (missing.length) showToast(`No news came back for ${missing.join(", ")}. Print again to retry.`, 5000);
   setAgentState("a", "done");
   document.getElementById("arrow-ab").classList.add("active");
   return catalogue;
@@ -358,14 +370,31 @@ async function runAgentB(catalogue, topics) {
   }
 
   const ranked = [...scored].sort((a, b) => b.score - a.score);
-  const top3   = ranked.slice(0, 3);
 
-  setMetric("m-b-selected", top3.length);
+  // One story per section: score each section's own headlines against that section's words
+  const picks = [];
+  const used  = new Set();
+  topics.forEach(topic => {
+    const words = buildKeywords([topic]);
+    const best  = scored
+      .filter(item => item.source === topic.label && !used.has(item.id))
+      .map(item => ({ item, s: scoreHeadline(item.headline, words).score }))
+      .sort((x, y) => y.s - x.s)[0];
+    if (best) { used.add(best.item.id); picks.push(best.item); }
+  });
+  // With fewer than three sections, fill the page up to three stories
+  for (const item of ranked) {
+    if (picks.length >= 3) break;
+    if (!used.has(item.id)) { used.add(item.id); picks.push(item); }
+  }
+  picks.sort((a, b) => b.score - a.score); // strongest match leads the page
+
+  setMetric("m-b-selected", picks.length);
   setMetric("m-b-time",     Date.now() - start);
-  setAgentStatus("b", `Top 3 picked from ${catalogue.length}`);
+  setAgentStatus("b", `${picks.length} stories picked, one per section`);
   setAgentState("b", "done");
   document.getElementById("arrow-bc").classList.add("active");
-  return { ranked, top3 };
+  return { ranked, picks };
 }
 
 /* ═══════════════════════════════════════════
@@ -378,13 +407,13 @@ function splitHeadline(raw) {
 }
 
 // Ask the server (OpenRouter) for real summaries. Throws with a readable reason.
-async function fetchAISummaries(top3, topics) {
+async function fetchAISummaries(stories, topics) {
   const res = await fetch("/api/summarize", {
     method:  "POST",
     headers: { "Content-Type": "application/json" },
     body:    JSON.stringify({
       topics:  topics.map(t => t.label),
-      stories: top3.map(item => splitHeadline(item.headline)),
+      stories: stories.map(item => splitHeadline(item.headline)),
     }),
   });
   let data = {};
@@ -395,7 +424,7 @@ async function fetchAISummaries(top3, topics) {
   return data;
 }
 
-async function runAgentC(top3, topics) {
+async function runAgentC(stories, topics) {
   setAgentState("c", "running");
   setAgentStatus("c", "Writing summaries…");
   setProgress("c", 15);
@@ -403,22 +432,22 @@ async function runAgentC(top3, topics) {
 
   let texts, status;
   try {
-    const ai = await fetchAISummaries(top3, topics);
+    const ai = await fetchAISummaries(stories, topics);
     texts  = ai.summaries;
     const model = (ai.model || "AI model").split("/").pop().replace(/:free$/, "");
-    status = `${top3.length} summaries written by ${model}`;
+    status = `${stories.length} summaries written by ${model}`;
   } catch (err) {
     console.warn("Agent C fallback:", err.message);
-    texts  = top3.map((item, i) => generateSummary(item.headline, item.keywords, topics, i));
+    texts  = stories.map((item, i) => generateSummary(item.headline, item.keywords, topics, i));
     status = `Basic summaries used. ${err.message}`;
   }
 
   const summaries = [];
   let totalWords  = 0;
-  for (let i = 0; i < top3.length; i++) {
-    summaries.push({ ...top3[i], summary: texts[i] });
+  for (let i = 0; i < stories.length; i++) {
+    summaries.push({ ...stories[i], summary: texts[i] });
     totalWords += texts[i].split(/\s+/).length;
-    setProgress("c", ((i + 1) / top3.length) * 100);
+    setProgress("c", ((i + 1) / stories.length) * 100);
     setMetric("m-c-drafted", i + 1);
     setMetric("m-c-words",   totalWords);
     await sleep(160);
@@ -448,7 +477,7 @@ function renderResults(summaries, allRanked, topics) {
   desc.textContent  = `Covering ${topicStr}. Ranked by Agent B, written by Agent C.`;
 
   const selectedIds = new Set(summaries.map(s => s.id));
-  const ordinals    = ["1st", "2nd", "3rd"];
+  const ordinal     = n => n + (["th","st","nd","rd"][(n % 100 - 20) % 10] || ["th","st","nd","rd"][n % 100] || "th");
 
   summaries.forEach((item, i) => {
     const summary  = escapeHtml(item.summary).replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
@@ -468,7 +497,7 @@ function renderResults(summaries, allRanked, topics) {
           <span class="meter-track"><span class="meter-fill" data-target="${item.score}"></span></span>
           ${item.score}% match
         </span>
-        <span>Ranked ${ordinals[i]}</span>
+        <span>Ranked ${ordinal(i + 1)}</span>
         ${publisher ? `<span>${escapeHtml(publisher)}</span>` : ""}
         <span>Filed under ${escapeHtml(item.source)}</span>
         ${date ? `<span>${date}</span>` : ""}
@@ -544,10 +573,10 @@ document.getElementById("btn-run").addEventListener("click", async () => {
     if (!catalogue.length) { document.getElementById("btn-run").disabled = false; return; }
     await sleep(220);
 
-    const { ranked, top3 }  = await runAgentB(catalogue, topics);
+    const { ranked, picks } = await runAgentB(catalogue, topics);
     await sleep(220);
 
-    const summaries          = await runAgentC(top3, topics);
+    const summaries          = await runAgentC(picks, topics);
     await sleep(150);
 
     renderResults(summaries, ranked, topics);
