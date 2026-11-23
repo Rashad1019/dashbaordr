@@ -138,6 +138,22 @@ document.getElementById("custom-topic-input").addEventListener("keydown", e => {
 /* ═══════════════════════════════════════════
    CORS PROXY + FETCH
 ═══════════════════════════════════════════ */
+// Social posts come through Google News with the whole caption as the "headline"
+const SOCIAL = /\b(instagram|facebook|tiktok|youtube|reddit|linkedin|threads|x\.com|twitter|pinterest)\b/i;
+function isRealArticle(item) {
+  const publisher = item.publisher || splitHeadline(item.headline).publisher;
+  return !SOCIAL.test(publisher) && item.headline.length <= 220;
+}
+
+// Long headlines are cut at the first sentence, or on a word boundary, for display
+function displayHeadline(text, max = 110) {
+  if (text.length <= max) return text;
+  const sentence = text.slice(0, max + 1).match(/^(.{40,}?[.?!])\s/);
+  if (sentence) return sentence[1];
+  const cut = text.slice(0, max);
+  return cut.slice(0, cut.lastIndexOf(" ")).replace(/[\s,;:–—-]+$/, "") + "…";
+}
+
 // Returns { items, ok }. Retries once, since Google News sometimes refuses bursts.
 async function fetchFeedForTopic(topic, attempt = 1) {
   try {
@@ -148,11 +164,12 @@ async function fetchFeedForTopic(topic, attempt = 1) {
     return {
       ok: true,
       items: data.items.map(item => ({
-        headline: item.title.replace(/<[^>]+>/g, "").trim(),
-        link:     item.link    || "",
-        pubDate:  item.pubDate || "",
-        source:   topic.label,
-      })),
+        headline:  item.title.replace(/<[^>]+>/g, "").trim(),
+        link:      item.link    || "",
+        pubDate:   item.pubDate || "",
+        publisher: item.source  || "",
+        source:    topic.label,
+      })).filter(isRealArticle),
     };
   } catch (err) {
     if (attempt < 3) { await sleep(700 * attempt); return fetchFeedForTopic(topic, attempt + 1); }
@@ -498,13 +515,16 @@ function renderResults(summaries, allRanked, topics) {
     const linkHtml = safeLink(item.link)
       ? `<a class="result-link" href="${escapeHtml(item.link)}" target="_blank" rel="noopener">Read the full story</a>` : "";
 
-    const { headline, publisher } = splitHeadline(item.headline);
+    const { headline: fullHeadline, publisher } = splitHeadline(item.headline);
+    // Every headline is held to the same rules: a length cap, then a size step by length
+    const headline  = displayHeadline(fullHeadline, i === 0 ? 90 : 80);
+    const sizeClass = headline.length > 65 ? " long" : headline.length > 40 ? " medium" : "";
 
     const card = document.createElement("article");
     card.className = `result-card ${i === 0 ? "lead" : "side"}`;
     card.innerHTML = `
-      <p class="kicker">${escapeHtml(item.tags.join(", "))}</p>
-      <h3 class="result-headline">${escapeHtml(headline)}</h3>
+      <p class="kicker">${escapeHtml(item.tags.slice(0, 2).join(", "))}</p>
+      <h3 class="result-headline${sizeClass}"${headline !== fullHeadline ? ` title="${escapeHtml(fullHeadline)}"` : ""}>${escapeHtml(headline)}</h3>
       <div class="result-meta">
         <span class="meter" title="Relevance to your sections">
           <span class="meter-track"><span class="meter-fill" data-target="${item.score}"></span></span>
