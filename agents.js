@@ -7,36 +7,9 @@
    =================================================================== */
 "use strict";
 
-/* ─── Background canvas (green / amber orbs) ─── */
-(function initCanvas() {
-  const canvas = document.getElementById("bg-canvas");
-  const ctx    = canvas.getContext("2d");
-  const ORBS   = [
-    { x: 0.1,  y: 0.15, r: 380, c: "13,32,80",    spd: 0.00014 },
-    { x: 0.88, y: 0.45, r: 300, c: "26,58,122",   spd: 0.00020 },
-    { x: 0.5,  y: 0.88, r: 240, c: "80,52,18",    spd: 0.00018 },
-    { x: 0.22, y: 0.72, r: 200, c: "42,70,130",   spd: 0.00023 },
-    { x: 0.78, y: 0.18, r: 180, c: "100,72,28",   spd: 0.00026 },
-  ];
-  let W, H, t = 0;
-  const resize = () => { W = canvas.width = window.innerWidth; H = canvas.height = window.innerHeight; };
-  resize();
-  window.addEventListener("resize", resize);
-  (function draw() {
-    ctx.clearRect(0, 0, W, H);
-    ORBS.forEach(o => {
-      const cx = o.x * W + Math.sin(t * o.spd) * 70;
-      const cy = o.y * H + Math.cos(t * o.spd * 1.4) * 55;
-      const g  = ctx.createRadialGradient(cx, cy, 0, cx, cy, o.r);
-      g.addColorStop(0,   `rgba(${o.c},0.18)`);
-      g.addColorStop(0.55,`rgba(${o.c},0.07)`);
-      g.addColorStop(1,   `rgba(${o.c},0)`);
-      ctx.fillStyle = g;
-      ctx.beginPath(); ctx.arc(cx, cy, o.r, 0, Math.PI * 2); ctx.fill();
-    });
-    t++; requestAnimationFrame(draw);
-  })();
-})();
+/* ─── Masthead dateline ─── */
+document.getElementById("today-date").textContent =
+  new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
 
 /* ═══════════════════════════════════════════
    PRESET TOPICS
@@ -58,82 +31,117 @@ const PRESET_TOPICS = [
 
 /* ═══════════════════════════════════════════
    STATE
+   The section list holds at most 7 sections. Each can be removed;
+   a new one can be added only when there's a free slot.
 ═══════════════════════════════════════════ */
-let selectedTopics = []; // array of { label, query }
+const MAX_SECTIONS = 7;
+const STORAGE_KEY  = "mana.sections.v1";
+
+const sameLabel     = (a, b) => a.toLowerCase() === b.toLowerCase();
+const defaultLabels = () => PRESET_TOPICS.slice(0, MAX_SECTIONS).map(t => t.label);
+
+// Typing a preset's name brings back its tuned search query
+function topicFor(label) {
+  return PRESET_TOPICS.find(t => sameLabel(t.label, label)) || { label, query: label };
+}
+
+function loadSections() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
+    if (Array.isArray(saved) && saved.every(l => typeof l === "string")) {
+      return saved.slice(0, MAX_SECTIONS).map(topicFor);
+    }
+  } catch { /* storage unavailable: fall back to defaults */ }
+  return defaultLabels().map(topicFor);
+}
+function saveSections() {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(sections.map(t => t.label))); } catch {}
+}
+
+let sections       = loadSections(); // the list shown on the page
+let selectedTopics = [];             // the ones highlighted for this edition
+
+const isSelected = label => selectedTopics.some(t => sameLabel(t.label, label));
+const isFull     = () => sections.length >= MAX_SECTIONS;
 
 /* ═══════════════════════════════════════════
-   BUILD PRESET CHIPS
+   SECTION LIST
 ═══════════════════════════════════════════ */
-function buildChips() {
+function renderSections() {
   const grid = document.getElementById("chip-grid");
-  PRESET_TOPICS.forEach((topic, i) => {
-    const chip = document.createElement("button");
-    chip.className  = "topic-chip";
-    chip.id         = `chip-${i}`;
-    chip.innerHTML  = `<span class="chip-icon">${topic.icon}</span>${topic.label}`;
-    chip.addEventListener("click", () => toggleTopic(topic, chip));
-    grid.appendChild(chip);
+  grid.innerHTML = "";
+
+  sections.forEach((topic, i) => {
+    const on   = isSelected(topic.label);
+    const item = document.createElement("span");
+    item.className = "section-item" + (on ? " selected" : "");
+    item.innerHTML = `
+      <button type="button" class="topic-chip" id="chip-${i}" aria-pressed="${on}">${escapeHtml(topic.label)}</button>
+      <button type="button" class="chip-remove" aria-label="Remove ${escapeHtml(topic.label)} from your sections">×</button>`;
+    item.querySelector(".topic-chip").addEventListener("click", () => toggleTopic(topic));
+    item.querySelector(".chip-remove").addEventListener("click", () => removeSection(topic.label));
+    grid.appendChild(item);
   });
 }
 
-function toggleTopic(topic, chipEl) {
-  const idx = selectedTopics.findIndex(t => t.label === topic.label);
-  if (idx === -1) {
-    selectedTopics.push(topic);
-    chipEl.classList.add("selected");
-  } else {
-    selectedTopics.splice(idx, 1);
-    chipEl.classList.remove("selected");
-  }
-  refreshSelectedDisplay();
+function toggleTopic(topic) {
+  if (isSelected(topic.label)) selectedTopics = selectedTopics.filter(t => !sameLabel(t.label, topic.label));
+  else selectedTopics.push(topic);
+  refresh();
 }
 
-function refreshSelectedDisplay() {
-  const wrap  = document.getElementById("selected-wrap");
-  const chips = document.getElementById("selected-chips");
-  const btn   = document.getElementById("btn-run");
+function removeSection(label) {
+  sections       = sections.filter(t => !sameLabel(t.label, label));
+  selectedTopics = selectedTopics.filter(t => !sameLabel(t.label, label));
+  saveSections();
+  refresh();
+}
 
-  chips.innerHTML = "";
-  selectedTopics.forEach((t, i) => {
-    const sc = document.createElement("span");
-    sc.className = "sel-chip";
-    sc.innerHTML = `${t.icon || "◆"} ${t.label} <span class="sel-chip-remove" data-i="${i}">✕</span>`;
-    chips.appendChild(sc);
-  });
+function refresh() {
+  renderSections();
 
-  // Remove listeners
-  chips.querySelectorAll(".sel-chip-remove").forEach(el => {
-    el.addEventListener("click", () => {
-      const i   = parseInt(el.dataset.i);
-      const lbl = selectedTopics[i].label;
-      selectedTopics.splice(i, 1);
-      // Deselect preset chip if applicable
-      document.querySelectorAll(".topic-chip").forEach(c => {
-        if (c.textContent.trim().includes(lbl)) c.classList.remove("selected");
-      });
-      refreshSelectedDisplay();
-    });
-  });
+  const n     = sections.length;
+  const count = document.getElementById("topic-count");
+  const input = document.getElementById("custom-topic-input");
+  const add   = document.getElementById("btn-add-topic");
 
-  wrap.style.display = selectedTopics.length ? "flex" : "none";
-  btn.disabled       = selectedTopics.length === 0;
+  count.textContent = isFull()
+    ? `${n} of ${MAX_SECTIONS} sections. Remove one to add your own.`
+    : `${n} of ${MAX_SECTIONS} sections. ${MAX_SECTIONS - n} free.`;
+
+  input.disabled = add.disabled = isFull();
+  input.placeholder = isFull() ? "Remove a section to add your own" : "Quantum computing, SpaceX, React 19";
+
+  const defaults  = defaultLabels();
+  const isDefault = n === defaults.length && sections.every((t, i) => t.label === defaults[i]);
+  document.getElementById("btn-clear").hidden = isDefault;
+  document.getElementById("btn-run").disabled = selectedTopics.length === 0;
 }
 
 /* ═══════════════════════════════════════════
-   CUSTOM TOPIC INPUT
+   ADD A SECTION
 ═══════════════════════════════════════════ */
 function addCustomTopic() {
   const input = document.getElementById("custom-topic-input");
-  const raw   = input.value.trim();
+  const raw   = input.value.trim().replace(/\s+/g, " ");
   if (!raw) return;
-  if (selectedTopics.find(t => t.label.toLowerCase() === raw.toLowerCase())) {
-    showToast("⚠ That topic is already selected");
-    return;
-  }
-  selectedTopics.push({ label: raw, query: raw, icon: "🔍" });
+  if (sections.some(t => sameLabel(t.label, raw))) { showToast("That section is already on your list"); return; }
+  if (isFull()) { showToast(`You can have ${MAX_SECTIONS} sections. Remove one to add another.`); return; }
+
+  const topic = topicFor(raw);
+  sections.push(topic);
+  selectedTopics.push(topic); // a section you just added is probably one you want
+  saveSections();
   input.value = "";
-  refreshSelectedDisplay();
+  refresh();
 }
+
+document.getElementById("btn-clear").addEventListener("click", () => {
+  sections       = defaultLabels().map(topicFor);
+  selectedTopics = [];
+  saveSections();
+  refresh();
+});
 
 document.getElementById("btn-add-topic").addEventListener("click", addCustomTopic);
 document.getElementById("custom-topic-input").addEventListener("keydown", e => {
@@ -243,7 +251,14 @@ function generateSummary(headline, keywords, topics, rank) {
    HELPERS
 ═══════════════════════════════════════════ */
 const sleep      = ms => new Promise(r => setTimeout(r, ms));
-const escapeHtml = s  => s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+const escapeHtml = s  => String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+const safeLink   = u  => /^https?:\/\//i.test(u || "");
+
+function formatDate(raw) {
+  if (!raw) return "";
+  const d = new Date(raw);
+  return isNaN(d) ? "" : d.toLocaleDateString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
 
 function setMetric(id, val) {
   const el = document.getElementById(id);
@@ -293,7 +308,7 @@ async function runAgentA(topics) {
   });
 
   if (raw.length === 0) {
-    showToast("⚠ Network unavailable — add topics manually or try again", 4500);
+    showToast("No headlines came back. Check your connection, then print again.", 4500);
     setAgentState("a", "idle");
     return [];
   }
@@ -318,7 +333,7 @@ async function runAgentA(topics) {
   setMetric("m-a-fetched", raw.length);
   setMetric("m-a-parsed",  raw.length);
   setMetric("m-a-time",    Date.now() - start);
-  setAgentStatus("a", `Done — ${raw.length} headlines catalogued`);
+  setAgentStatus("a", `${raw.length} headlines catalogued`);
   setAgentState("a", "done");
   document.getElementById("arrow-ab").classList.add("active");
   return catalogue;
@@ -347,7 +362,7 @@ async function runAgentB(catalogue, topics) {
 
   setMetric("m-b-selected", top3.length);
   setMetric("m-b-time",     Date.now() - start);
-  setAgentStatus("b", `Done — top 3 selected from ${catalogue.length}`);
+  setAgentStatus("b", `Top 3 picked from ${catalogue.length}`);
   setAgentState("b", "done");
   document.getElementById("arrow-bc").classList.add("active");
   return { ranked, top3 };
@@ -375,7 +390,7 @@ async function runAgentC(top3, topics) {
   }
 
   setMetric("m-c-time",  Date.now() - start);
-  setAgentStatus("c", `Done — ${top3.length} summaries written`);
+  setAgentStatus("c", `${top3.length} summaries written`);
   setAgentState("c", "done");
   return summaries;
 }
@@ -394,47 +409,42 @@ function renderResults(summaries, allRanked, topics) {
   tbody.innerHTML = "";
 
   const topicStr = topics.map(t => t.label).join(", ");
-  title.textContent = `Top 3 Headlines: ${topicStr}`;
-  desc.textContent  = `Agent B selected the most relevant headlines for your topics. Agent C wrote the summaries below.`;
+  title.textContent = "Front page";
+  desc.textContent  = `Covering ${topicStr}. Ranked by Agent B, written by Agent C.`;
 
   const selectedIds = new Set(summaries.map(s => s.id));
+  const ordinals    = ["1st", "2nd", "3rd"];
 
   summaries.forEach((item, i) => {
-    const rankClass = ["rank-1","rank-2","rank-3"][i];
-    const rankLabel = ["#1","#2","#3"][i];
-    const tags      = item.tags.map(t => `<span class="tag">${t}</span>`).join("");
-    const summary   = item.summary.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
-    const linkHtml  = item.link
-      ? `<a class="result-link" href="${item.link}" target="_blank" rel="noopener">Read full article ↗</a>` : "";
+    const summary  = item.summary.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
+    const date     = formatDate(item.pubDate);
+    const linkHtml = safeLink(item.link)
+      ? `<a class="result-link" href="${escapeHtml(item.link)}" target="_blank" rel="noopener">Read the full story</a>` : "";
 
-    const card = document.createElement("div");
-    card.className = "result-card";
+    // Google News headlines end in " - Publisher"; move that into the byline
+    const m         = item.headline.match(/^(.*\S)\s+[-–—|]\s+([^-–—|]{2,60})$/);
+    const headline  = m ? m[1] : item.headline;
+    const publisher = m ? m[2] : "";
+
+    const card = document.createElement("article");
+    card.className = `result-card ${i === 0 ? "lead" : "side"}`;
     card.innerHTML = `
-      <div class="result-card-top">
-        <div class="result-rank">
-          <div class="rank-badge ${rankClass}">${rankLabel}</div>
-          <div class="score-bar-wrap">
-            <div class="score-bar-fill" style="width:0%" data-target="${item.score}"></div>
-          </div>
-          <span class="score-val">${item.score}%</span>
-        </div>
-        <div class="result-headline">${escapeHtml(item.headline)}</div>
-        <div class="result-tags">${tags}</div>
-        ${item.pubDate ? `<div class="result-meta">📅 ${item.pubDate.slice(0,10)} · ${escapeHtml(item.source)}</div>` : ""}
+      <p class="kicker">${escapeHtml(item.tags.join(", "))}</p>
+      <h3 class="result-headline">${escapeHtml(headline)}</h3>
+      <div class="result-meta">
+        <span class="meter" title="Relevance to your sections">
+          <span class="meter-track"><span class="meter-fill" data-target="${item.score}"></span></span>
+          ${item.score}% match
+        </span>
+        <span>Ranked ${ordinals[i]}</span>
+        ${publisher ? `<span>${escapeHtml(publisher)}</span>` : ""}
+        <span>Filed under ${escapeHtml(item.source)}</span>
+        ${date ? `<span>${date}</span>` : ""}
       </div>
-      <div class="result-summary">
-        <div class="summary-label">Agent C · Summary</div>
-        <div class="summary-text">${summary}</div>
-        ${linkHtml}
-      </div>
+      <p class="summary-text">${summary}</p>
+      ${linkHtml}
     `;
     grid.appendChild(card);
-  });
-
-  requestAnimationFrame(() => {
-    document.querySelectorAll(".score-bar-fill").forEach(el =>
-      requestAnimationFrame(() => { el.style.width = el.dataset.target + "%"; })
-    );
   });
 
   allRanked.forEach((item, i) => {
@@ -443,14 +453,27 @@ function renderResults(summaries, allRanked, topics) {
     if (isTop) tr.classList.add("highlighted");
     tr.innerHTML = `
       <td>${i + 1}</td>
-      <td>${escapeHtml(item.headline)}${isTop ? " ★" : ""}</td>
+      <td><span>${escapeHtml(item.headline)}</span></td>
       <td>${escapeHtml(item.tags.join(", "))}</td>
       <td><span class="score-chip ${item.score >= 20 ? "score-high" : "score-mid"}">${item.score}</span></td>
     `;
     tbody.appendChild(tr);
   });
 
-  section.style.display = "flex";
+  document.getElementById("blank-page").style.display = "none";
+  section.style.display = "block";
+  section.classList.remove("printing");
+  void section.offsetWidth; // restart the print animation
+  section.classList.add("printing");
+
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    section.querySelectorAll(".meter-fill").forEach(el => { el.style.width = el.dataset.target + "%"; });
+  }));
+
+  const stamp = document.getElementById("edition-stamp");
+  stamp.textContent = `Edition printed ${new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}`;
+  stamp.classList.add("printed");
+
   setTimeout(() => section.scrollIntoView({ behavior: "smooth", block: "start" }), 100);
 }
 
@@ -461,7 +484,7 @@ function resetPipeline() {
   ["a","b","c"].forEach(id => {
     setAgentState(id, "idle");
     setProgress(id, 0);
-    setAgentStatus(id, "Waiting…");
+    setAgentStatus(id, "Waiting");
   });
   ["m-a-fetched","m-a-parsed","m-a-time",
    "m-b-scored","m-b-selected","m-b-time",
@@ -497,11 +520,11 @@ document.getElementById("btn-run").addEventListener("click", async () => {
 
     renderResults(summaries, ranked, topics);
     const elapsed = ((Date.now() - tTotal) / 1000).toFixed(1);
-    showToast(`✓ Done in ${elapsed}s · ${catalogue.length} headlines scanned · Top 3 identified`);
+    showToast(`Edition printed in ${elapsed}s from ${catalogue.length} headlines.`);
 
   } catch (err) {
     console.error(err);
-    showToast("⚠ Pipeline error — check the browser console");
+    showToast("The press stopped on an error. Details are in the browser console.");
   } finally {
     document.getElementById("btn-run").disabled = selectedTopics.length === 0;
   }
@@ -510,6 +533,7 @@ document.getElementById("btn-run").addEventListener("click", async () => {
 /* Reset button */
 document.getElementById("btn-reset").addEventListener("click", () => {
   document.getElementById("results-section").style.display = "none";
+  document.getElementById("blank-page").style.display = "";
   resetPipeline();
   window.scrollTo({ top: 0, behavior: "smooth" });
 });
@@ -524,8 +548,8 @@ document.getElementById("btn-copy").addEventListener("click", () => {
     text += `── HEADLINE ${i + 1} ──\n${h}\n\nSUMMARY:\n${s}\n\n`;
   });
   navigator.clipboard.writeText(text.trim())
-    .then(()  => showToast("✓ Summaries copied to clipboard"))
-    .catch(()  => showToast("⚠ Could not access clipboard"));
+    .then(()  => showToast("Summaries copied"))
+    .catch(()  => showToast("Copy failed. Your browser blocked clipboard access."));
 });
 
 /* Footer clock */
@@ -535,5 +559,5 @@ document.getElementById("btn-copy").addEventListener("click", () => {
   setTimeout(clock, 1000);
 })();
 
-/* Init chips */
-buildChips();
+/* Init sections */
+refresh();
